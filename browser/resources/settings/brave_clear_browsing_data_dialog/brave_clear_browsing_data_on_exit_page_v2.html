@@ -1,0 +1,72 @@
+<style include="settings-shared">
+  :host {
+    --dbd-container-border-radius: 12px;
+    --dbd-container-color: var(--cr-fallback-color-surface3);
+    --dbd-container-stacked-border-radius: 4px;
+    --settings-checkbox-margin-top: 8px;
+  }
+
+  #checkboxContainer {
+    background-color: var(--dbd-container-color);
+    border-radius: var(--dbd-container-border-radius);
+    padding: 8px var(--cr-section-padding) 12px var(--cr-section-padding);
+  }
+
+  #checkboxContainer:has(+ #showMoreButton:not([hidden])) {
+    border-bottom-left-radius: var(--dbd-container-stacked-border-radius);
+    border-bottom-right-radius: var(--dbd-container-stacked-border-radius);
+    border-top-left-radius: var(--dbd-container-border-radius);
+    border-top-right-radius: var(--dbd-container-border-radius);
+    margin-bottom: 2px;
+  }
+
+  #showMoreButton {
+    --cr-button-background-color: var(--dbd-container-color);
+    --cr-button-height: auto;
+    --cr-button-text-color: var(--cr-primary-text-color);
+    border: none;
+    border-bottom-left-radius: var(--dbd-container-border-radius);
+    border-bottom-right-radius: var(--dbd-container-border-radius);
+    border-top-left-radius: var(--dbd-container-stacked-border-radius);
+    border-top-right-radius: var(--dbd-container-stacked-border-radius);
+    padding: var(--cr-section-vertical-padding) 16px;
+    width: 100%;
+  }
+
+  settings-checkbox {
+    --cr-section-two-line-min-height: 40px;
+  }
+
+  .checkbox-title {
+    font-weight: 500;
+  }
+</style>
+
+<div id="checkboxContainer">
+  <template is="dom-repeat"
+      items="[[expandedBrowsingDataTypeOptionsList_]]">
+    <settings-checkbox pref="{{item.pref}}" no-set-pref
+        sub-label-html="[[item.subLabel]]">
+      <div class="checkbox-title">[[item.label]]</div>
+    </settings-checkbox>
+  </template>
+  <div id="moreOptionsList">
+    <template is="dom-if" if="[[dataTypesExpanded_]]">
+      <template is="dom-repeat"
+          items="[[moreBrowsingDataTypeOptionsList_]]">
+        <settings-checkbox pref="{{item.pref}}" no-set-pref
+            sub-label-html="[[item.subLabel]]">
+          <div class="checkbox-title">[[item.label]]</div>
+        </settings-checkbox>
+      </template>
+    </template>
+  </div>
+</div>
+
+<cr-button id="showMoreButton" on-click="onShowMoreClick_"
+    hidden="[[shouldHideShowMoreButton_(
+        dataTypesExpanded_, moreBrowsingDataTypeOptionsList_)]]">
+  [[showMoreButtonLabel_]]
+  <cr-icon icon="cr:expand-more" aria-hidden="true" role="presentation">
+  </cr-icon>
+</cr-button>
