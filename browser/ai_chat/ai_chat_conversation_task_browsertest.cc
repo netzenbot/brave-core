@@ -83,7 +83,7 @@ class AIChatConversationTaskBrowserTest : public InProcessBrowserTest {
   AIChatConversationTaskBrowserTest() {
     scoped_feature_list_.InitWithFeaturesAndParameters(
         {{::features::kGlicActor,
-          {{::features::kGlicActorPolicyControlExemption.name, "false"}}},
+          {{::features::kGlicActorPolicyControlExemption.name, "true"}}},
          {features::kAIChatAgentProfile, {}}},
         {});
   }
