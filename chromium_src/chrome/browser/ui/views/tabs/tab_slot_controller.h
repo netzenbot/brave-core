@@ -8,8 +8,6 @@
 
 #define IsGroupCollapsed(...)                                  \
   IsGroupCollapsed(__VA_ARGS__) const = 0;                     \
-  virtual void SetCustomTitleForTab(                           \
-      Tab* tab, const std::optional<std::u16string>& title) {} \
   virtual const Browser* GetBrowser()
 
 // Add a method to TabSlotController to determine whether to hide the close
