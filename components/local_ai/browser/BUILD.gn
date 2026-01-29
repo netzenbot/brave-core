@@ -23,7 +23,7 @@ source_set("local_models_updater") {
   ]
 }
 
-# Desktop (non-iOS) implementation - uses //content
+# Desktop (non-iOS) implementation - uses native Rust FFI
 if (!is_ios) {
   static_library("browser") {
     sources = [
@@ -35,12 +35,8 @@ if (!is_ios) {
 
     deps = [
       ":local_models_updater",
-      "//brave/components/constants",
-      "//brave/components/local_ai/common:mojom",
+      "//brave/components/local_ai/rust/ffi:ffi",
       "//components/keyed_service/core",
-      "//content/public/browser",
-      "//mojo/public/cpp/bindings",
-      "//ui/base",
     ]
   }
 }

@@ -5,17 +5,14 @@
 
 #include "brave/components/local_ai/browser/candle_service.h"
 
+#include <utility>
+
 #include "base/files/file_path.h"
 #include "base/files/file_util.h"
 #include "base/logging.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/task/thread_pool.h"
-#include "brave/components/constants/webui_url_constants.h"
 #include "brave/components/local_ai/browser/local_models_updater.h"
-#include "content/public/browser/navigation_controller.h"
-#include "content/public/browser/web_contents.h"
-#include "mojo/public/cpp/base/big_buffer.h"
-#include "ui/base/page_transition_types.h"
 
 namespace local_ai {
 
@@ -31,7 +28,15 @@ CandleService::PendingEmbedRequest::operator=(PendingEmbedRequest&&) = default;
 
 namespace {
 
-mojom::ModelFilesPtr LoadEmbeddingGemmaModelFilesFromDisk(
+struct ModelFiles {
+  std::vector<uint8_t> weights;
+  std::vector<uint8_t> weights_dense1;
+  std::vector<uint8_t> weights_dense2;
+  std::vector<uint8_t> tokenizer;
+  std::vector<uint8_t> config;
+};
+
+std::unique_ptr<ModelFiles> LoadEmbeddingGemmaModelFilesFromDisk(
     const base::FilePath& weights_path,
     const base::FilePath& weights_dense1_path,
     const base::FilePath& weights_dense2_path,
@@ -73,95 +78,40 @@ mojom::ModelFilesPtr LoadEmbeddingGemmaModelFilesFromDisk(
   DVLOG(1) << "Loaded tokenizer, size: " << tokenizer_opt->size();
   DVLOG(1) << "Loaded config, size: " << config_opt->size();
 
-  // Create BigBuffer directly - it will automatically use shared memory for
-  // large data (> 64KB)
-  auto model_files = mojom::ModelFiles::New();
-  model_files->weights = mojo_base::BigBuffer(std::move(*weights_opt));
-  model_files->weights_dense1 =
-      mojo_base::BigBuffer(std::move(*weights_dense1_opt));
-  model_files->weights_dense2 =
-      mojo_base::BigBuffer(std::move(*weights_dense2_opt));
-  model_files->tokenizer = mojo_base::BigBuffer(std::move(*tokenizer_opt));
-  model_files->config = mojo_base::BigBuffer(std::move(*config_opt));
+  auto model_files = std::make_unique<ModelFiles>();
+  model_files->weights = std::move(*weights_opt);
+  model_files->weights_dense1 = std::move(*weights_dense1_opt);
+  model_files->weights_dense2 = std::move(*weights_dense2_opt);
+  model_files->tokenizer = std::move(*tokenizer_opt);
+  model_files->config = std::move(*config_opt);
 
   return model_files;
 }
 
 }  // namespace
 
-CandleService::CandleService(content::BrowserContext* browser_context)
-    : browser_context_(browser_context) {
-  DVLOG(3) << "CandleService created for browser context";
-
-  if (!browser_context_) {
-    DVLOG(0) << "CandleService: No browser context available";
-    return;
-  }
+CandleService::CandleService() {
+  DVLOG(3) << "CandleService created";
 
   // Observe the component updater for model readiness
   LocalModelsUpdaterState::GetInstance()->AddObserver(this);
 
-  // Create a hidden WebContents to load the WASM
-  content::WebContents::CreateParams create_params(browser_context_);
-  create_params.is_never_composited = true;
-  wasm_web_contents_ = content::WebContents::Create(create_params);
-
-  // Observe the WebContents
-  Observe(wasm_web_contents_.get());
-
-  // Navigate to the WASM page - this will trigger BindEmbeddingGemma
-  // automatically
-  GURL wasm_url(kUntrustedCandleEmbeddingGemmaWasmURL);
-  DVLOG(3) << "CandleService: Loading WASM from " << wasm_url;
-  wasm_web_contents_->GetController().LoadURL(wasm_url, content::Referrer(),
-                                              ui::PAGE_TRANSITION_AUTO_TOPLEVEL,
-                                              std::string());
+  // Check if model is already ready
+  const base::FilePath& model_dir =
+      LocalModelsUpdaterState::GetInstance()->GetEmbeddingGemmaModelDir();
+  if (!model_dir.empty()) {
+    OnComponentReady(model_dir);
+  }
 }
 
 CandleService::~CandleService() {
   LocalModelsUpdaterState::GetInstance()->RemoveObserver(this);
-  CloseWasmWebContents();
 }
 
-void CandleService::BindReceiver(
-    mojo::PendingReceiver<mojom::CandleService> receiver) {
-  receivers_.Add(this, std::move(receiver));
-  DVLOG(3) << "BindReceiver called";
-}
-
-void CandleService::BindEmbeddingGemma(
-    mojo::PendingRemote<mojom::EmbeddingGemmaInterface> pending_remote) {
-  // Bind the single embedder remote from our WASM WebContents
-  if (embedding_gemma_remote_.is_bound()) {
-    DVLOG(1) << "EmbeddingGemma already bound, resetting";
-    embedding_gemma_remote_.reset();
-    model_initialized_ = false;
-  }
-  embedding_gemma_remote_.Bind(std::move(pending_remote));
-
-  // Set up disconnect handler
-  embedding_gemma_remote_.set_disconnect_handler(base::BindOnce(
-      [](CandleService* service) {
-        DVLOG(1) << "EmbeddingGemma remote disconnected";
-        service->model_initialized_ = false;
-        // Clear pending requests on disconnect
-        for (auto& request : service->pending_embed_requests_) {
-          std::move(request.callback).Run({});
-        }
-        service->pending_embed_requests_.clear();
-      },
-      base::Unretained(this)));
-
-  DVLOG(3) << "BindEmbeddingGemma: Bound embedder remote";
-
-  // Try to load model now that remote is bound
-  TryLoadModel();
-}
 
 void CandleService::LoadModelFiles() {
-  if (!embedding_gemma_remote_) {
-    DVLOG(0) << "Embedding Gemma interface not bound";
-    OnModelFilesLoaded(false);
+  if (model_initialized_ || embedder_) {
+    DVLOG(3) << "Model already initialized or loading";
     return;
   }
 
@@ -182,12 +132,8 @@ void CandleService::LoadModelFiles() {
 
   if (model_dir.empty()) {
     DVLOG(0) << "CandleService: Model directory not set in updater state";
-    OnModelFilesLoaded(false);
     return;
   }
-
-  // Store model directory for potential retries
-  pending_model_path_ = model_dir;
 
   DVLOG(1) << "Loading Embedding Gemma model files (attempt "
            << (model_load_retry_count_ + 1) << "/" << kMaxModelLoadRetries
@@ -206,88 +152,103 @@ void CandleService::LoadModelFiles() {
       base::BindOnce(&LoadEmbeddingGemmaModelFilesFromDisk, weights_path,
                      weights_dense1_path, weights_dense2_path, tokenizer_path,
                      config_path),
-      base::BindOnce(&CandleService::OnEmbeddingGemmaModelFilesLoaded,
-                     weak_ptr_factory_.GetWeakPtr()));
+      base::BindOnce(
+          [](base::WeakPtr<CandleService> service,
+             std::unique_ptr<ModelFiles> model_files) {
+            if (!service) {
+              return;
+            }
+
+            if (!model_files) {
+              DVLOG(0) << "Failed to load model files from disk";
+              service->model_load_retry_count_++;
+              if (service->model_load_retry_count_ <
+                  CandleService::kMaxModelLoadRetries) {
+                DVLOG(1) << "Retrying model load in 1 second...";
+                base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
+                    FROM_HERE,
+                    base::BindOnce(&CandleService::LoadModelFiles, service),
+                    base::Seconds(1));
+              }
+              return;
+            }
+
+            DVLOG(3) << "Model files loaded, initializing embedder...";
+            CandleEmbedder::Create(
+                std::move(model_files->weights),
+                std::move(model_files->weights_dense1),
+                std::move(model_files->weights_dense2),
+                std::move(model_files->tokenizer), std::move(model_files->config),
+                base::BindOnce(
+                    [](base::WeakPtr<CandleService> svc,
+                       std::unique_ptr<CandleEmbedder> embedder,
+                       const std::string& error_message) {
+                      if (!svc) {
+                        return;
+                      }
+                      svc->OnModelInitialized(std::move(embedder),
+                                              error_message);
+                    },
+                    service));
+          },
+          weak_ptr_factory_.GetWeakPtr()));
 }
 
 void CandleService::Embed(const std::string& text, EmbedCallback callback) {
-  if (!embedding_gemma_remote_) {
-    DVLOG(0) << "Embedding Gemma remote not bound";
-    std::move(callback).Run({});
-    return;
-  }
-
-  // If model is not initialized yet, queue the request
-  if (!model_initialized_) {
+  if (!embedder_ || !model_initialized_) {
     DVLOG(3) << "Model not initialized yet, queuing embed request";
     pending_embed_requests_.emplace_back(text, std::move(callback));
     return;
   }
 
-  embedding_gemma_remote_->Embed(text, std::move(callback));
+  embedder_->Embed(text, std::move(callback));
 }
 
-void CandleService::OnEmbeddingGemmaModelFilesLoaded(
-    mojom::ModelFilesPtr model_files) {
-  DVLOG(3) << "CandleService::OnEmbeddingGemmaModelFilesLoaded called";
+void CandleService::OnModelInitialized(
+    std::unique_ptr<CandleEmbedder> embedder,
+    const std::string& error_message) {
+  if (embedder) {
+    DVLOG(3) << "CandleService: EmbeddingGemma model loaded successfully! "
+             << "History embeddings are now ready.";
+    model_load_retry_count_ = 0;
+    model_initialized_ = true;
+    embedder_ = std::move(embedder);
 
-  if (!model_files) {
-    DVLOG(0) << "Failed to load embedding gemma model files from disk";
-    OnModelFilesLoaded(false);
-    return;
+    // Process any queued embed requests
+    ProcessPendingEmbedRequests();
+  } else {
+    DVLOG(0) << "CandleService: Model initialization failed: "
+             << error_message;
+    model_load_retry_count_++;
+
+    if (model_load_retry_count_ < kMaxModelLoadRetries) {
+      DVLOG(1) << "Retrying model load in 1 second...";
+      base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
+          FROM_HERE,
+          base::BindOnce(&CandleService::LoadModelFiles,
+                         weak_ptr_factory_.GetWeakPtr()),
+          base::Seconds(1));
+    } else {
+      DVLOG(0) << "CandleService: Failed to load model after "
+               << kMaxModelLoadRetries << " attempts. "
+               << "History embeddings will not work.";
+      // Clear pending requests
+      for (auto& request : pending_embed_requests_) {
+        std::vector<double> empty;
+        std::move(request.callback).Run(empty);
+      }
+      pending_embed_requests_.clear();
+    }
   }
-
-  DVLOG(3) << "Calling embedding_gemma_remote_->Init()...";
-  embedding_gemma_remote_->Init(
-      std::move(model_files), base::BindOnce(&CandleService::OnModelFilesLoaded,
-                                             weak_ptr_factory_.GetWeakPtr()));
-}
-
-void CandleService::DidFinishLoad(content::RenderFrameHost* render_frame_host,
-                                  const GURL& validated_url) {
-  DVLOG(3) << "CandleService: WASM page loaded: " << validated_url;
-  wasm_page_loaded_ = true;
-
-  // Try to load model if both conditions are met
-  TryLoadModel();
 }
 
 void CandleService::OnComponentReady(const base::FilePath& install_dir) {
   DVLOG(3) << "CandleService: Component ready at: " << install_dir;
   component_ready_ = true;
 
-  // Try to load model if both conditions are met
-  TryLoadModel();
-}
-
-void CandleService::TryLoadModel() {
-  DVLOG(3) << "CandleService::TryLoadModel - wasm_page_loaded_="
-           << wasm_page_loaded_ << ", component_ready_=" << component_ready_
-           << ", remote_bound=" << embedding_gemma_remote_.is_bound()
-           << ", model_initialized_=" << model_initialized_;
-
-  if (!wasm_page_loaded_) {
-    DVLOG(3) << "CandleService: Waiting for WASM page to load...";
-    return;
+  if (!model_initialized_ && !embedder_) {
+    LoadModelFiles();
   }
-
-  if (!component_ready_) {
-    DVLOG(3) << "CandleService: Waiting for component to be ready...";
-    return;
-  }
-
-  if (!embedding_gemma_remote_.is_bound()) {
-    DVLOG(1) << "CandleService: WASM page loaded but remote not bound yet";
-    return;
-  }
-
-  if (model_initialized_) {
-    DVLOG(3) << "CandleService: Model already initialized";
-    return;
-  }
-
-  DVLOG(3) << "CandleService: Both WASM and component ready, loading model...";
-  LoadModelFiles();
 }
 
 void CandleService::Shutdown() {
@@ -295,15 +256,17 @@ void CandleService::Shutdown() {
 
   // Clear any pending requests
   for (auto& request : pending_embed_requests_) {
-    std::move(request.callback).Run({});
+    std::vector<double> empty;
+    std::move(request.callback).Run(empty);
   }
   pending_embed_requests_.clear();
 
-  CloseWasmWebContents();
+  embedder_.reset();
+  model_initialized_ = false;
 }
 
 void CandleService::ProcessPendingEmbedRequests() {
-  if (!model_initialized_ || !embedding_gemma_remote_) {
+  if (!model_initialized_ || !embedder_) {
     return;
   }
 
@@ -312,61 +275,9 @@ void CandleService::ProcessPendingEmbedRequests() {
 
   // Process all queued requests
   for (auto& request : pending_embed_requests_) {
-    embedding_gemma_remote_->Embed(request.text, std::move(request.callback));
+    embedder_->Embed(request.text, std::move(request.callback));
   }
   pending_embed_requests_.clear();
-}
-
-void CandleService::CloseWasmWebContents() {
-  if (wasm_web_contents_) {
-    Observe(nullptr);
-    wasm_web_contents_->Close();
-    wasm_web_contents_.reset();
-  }
-}
-
-void CandleService::OnModelFilesLoaded(bool success) {
-  DVLOG(3) << "CandleService::OnModelFilesLoaded called with success="
-           << success;
-
-  if (success) {
-    DVLOG(3) << "CandleService: EmbeddingGemma model loaded successfully! "
-             << "History embeddings are now ready.";
-    model_load_retry_count_ = 0;
-    model_initialized_ = true;
-
-    DVLOG(3) << "Processing " << pending_embed_requests_.size()
-             << " pending requests";
-    // Process any queued embed requests
-    ProcessPendingEmbedRequests();
-  } else {
-    // Failed - this could be because binding isn't ready yet or file not found
-    model_load_retry_count_++;
-    model_initialized_ = false;
-
-    if (model_load_retry_count_ < kMaxModelLoadRetries) {
-      DVLOG(1) << "CandleService: Failed to load model (attempt "
-               << model_load_retry_count_ << "/" << kMaxModelLoadRetries
-               << "). Retrying in 100ms...";
-      RetryLoadModel();
-    } else {
-      DVLOG(0) << "CandleService: Failed to load EmbeddingGemma model after "
-               << kMaxModelLoadRetries << " attempts. "
-               << "History embeddings will not work. "
-               << "Make sure model files are downloaded via component "
-               << "updater.";
-      model_load_retry_count_ = 0;
-    }
-  }
-}
-
-void CandleService::RetryLoadModel() {
-  // Post a delayed task to retry after 100ms
-  base::SequencedTaskRunner::GetCurrentDefault()->PostDelayedTask(
-      FROM_HERE,
-      base::BindOnce(&CandleService::LoadModelFiles,
-                     weak_ptr_factory_.GetWeakPtr()),
-      base::Milliseconds(100));
 }
 
 }  // namespace local_ai
