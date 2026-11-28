@@ -16,6 +16,7 @@
 
 #include "base/files/scoped_temp_dir.h"
 #include "base/functional/callback_helpers.h"
+#include "base/json/json_reader.h"
 #include "base/memory/raw_ptr.h"
 #include "base/memory/scoped_refptr.h"
 #include "base/strings/strcat.h"
@@ -37,6 +38,7 @@
 #include "brave/components/brave_wallet/browser/brave_wallet_utils.h"
 #include "brave/components/brave_wallet/browser/eth_tx_manager.h"
 #include "brave/components/brave_wallet/browser/json_rpc_service.h"
+#include "brave/components/brave_wallet/browser/json_rpc_service_test_utils.h"
 #include "brave/components/brave_wallet/browser/keyring_service.h"
 #include "brave/components/brave_wallet/browser/pref_names.h"
 #include "brave/components/brave_wallet/browser/test_utils.h"
@@ -330,16 +332,7 @@ class EthereumProviderImplUnitTest : public testing::Test {
     const std::string decimals_result = AbiEncodeUint(decimals);
     url_loader_factory_.SetInterceptor(base::BindLambdaForTesting(
         [=, this](const network::ResourceRequest& request) {
-          if (!request.request_body ||
-              request.request_body->elements()->empty()) {
-            ADD_FAILURE() << "Unexpected request without body: "
-                          << request.url.spec();
-            return;
-          }
-          std::string_view request_string(request.request_body->elements()
-                                              ->at(0)
-                                              .As<network::DataElementBytes>()
-                                              .AsStringPiece());
+          const auto request_string = GetRpcRequestBody(request);
           url_loader_factory_.ClearResponses();
           if (request_string.find("0x95d89b41") != std::string::npos) {
             url_loader_factory_.AddResponse(
@@ -352,7 +345,7 @@ class EthereumProviderImplUnitTest : public testing::Test {
                 "{\"jsonrpc\":\"2.0\",\"id\":1,\"result\":\"" +
                     decimals_result + "\"}");
           } else {
-            ADD_FAILURE() << "Unexpected RPC: " << request_string;
+            RejectUnexpectedRpcRequest(url_loader_factory_, request);
           }
         }));
   }
@@ -1633,13 +1626,15 @@ TEST_F(EthereumProviderImplUnitTest,
   url_loader_factory_.SetInterceptor(
       base::BindLambdaForTesting([&](const network::ResourceRequest& request) {
         url_loader_factory_.ClearResponses();
-        std::string_view request_string(request.request_body->elements()
-                                            ->at(0)
-                                            .As<network::DataElementBytes>()
-                                            .AsStringPiece());
-        base::DictValue request_value = ParseJsonDict(request_string);
-        std::string* method = request_value.FindString("method");
-        ASSERT_TRUE(method);
+        const auto request_string = GetRpcRequestBody(request);
+        const auto request_value =
+            base::JSONReader::ReadDict(request_string, base::JSON_PARSE_RFC);
+        const auto* method =
+            request_value ? request_value->FindString("method") : nullptr;
+        if (!method) {
+          RejectUnexpectedRpcRequest(url_loader_factory_, request);
+          return;
+        }
         if (*method == "eth_gasPrice") {
           url_loader_factory_.AddResponse(
               request.url.spec(),
@@ -1674,7 +1669,7 @@ TEST_F(EthereumProviderImplUnitTest,
               request.url.spec(),
               R"({"jsonrpc":"2.0","id":1,"result":{"value":[]}})");
         } else {
-          ADD_FAILURE() << "Unexpected RPC: " << request_string;
+          RejectUnexpectedRpcRequest(url_loader_factory_, request);
         }
       }));
   base::test::TestFuture<bool, const std::string&, const std::string&>
@@ -2249,18 +2244,18 @@ TEST_F(EthereumProviderImplUnitTest, EthSubscribe) {
         url_loader_factory_.ClearResponses();
 
         auto header_value = request.headers.GetHeader("X-Eth-Method");
-        ASSERT_TRUE(header_value);
         std::string content;
-        if (*header_value == "eth_blockNumber" ||
-            *header_value == "getBlockHeight") {
+        if (header_value == "eth_blockNumber" ||
+            header_value == "getBlockHeight") {
           content = R"({"id":1,"jsonrpc":"2.0","result":"0x131131"})";
-        } else if (*header_value == "eth_getBlockByNumber") {
+        } else if (header_value == "eth_getBlockByNumber") {
           content = R"({"id":1,"jsonrpc":"2.0","result":{"difficulty":"0x1"}})";
-        } else if (*header_value == "getTokenAccountsByOwner") {
+        } else if (header_value == "getTokenAccountsByOwner") {
           // Background token discovery; irrelevant to this test.
           content = R"({"jsonrpc":"2.0","id":1,"result":{"value":[]}})";
         } else {
-          ADD_FAILURE() << "Unexpected RPC method: " << *header_value;
+          RejectUnexpectedRpcRequest(url_loader_factory_, request);
+          return;
         }
         url_loader_factory_.AddResponse(request.url.spec(), content);
       }));
@@ -2336,20 +2331,20 @@ TEST_F(EthereumProviderImplUnitTest, EthSubscribeLogs) {
         url_loader_factory_.ClearResponses();
 
         auto header_value = request.headers.GetHeader("X-Eth-Method");
-        ASSERT_TRUE(header_value);
         std::string content;
-        if (*header_value == "eth_getLogs") {
+        if (header_value == "eth_getLogs") {
           content =
               R"({"id":1,"jsonrpc":"2.0","result":[{"address":"0x91",
               "blockHash":"0xe8","blockNumber":"0x10","data":"0x0067",
               "logIndex":"0x0","removed":false,
               "topics":["0x4b","0x06e","0x085"],
               "transactionHash":"0x22f7","transactionIndex":"0x0"}]})";
-        } else if (*header_value == "getTokenAccountsByOwner") {
+        } else if (header_value == "getTokenAccountsByOwner") {
           // Background token discovery; irrelevant to this test.
           content = R"({"jsonrpc":"2.0","id":1,"result":{"value":[]}})";
         } else {
-          ADD_FAILURE() << "Unexpected RPC method: " << *header_value;
+          RejectUnexpectedRpcRequest(url_loader_factory_, request);
+          return;
         }
         url_loader_factory_.AddResponse(request.url.spec(), content);
       }));
@@ -2710,7 +2705,7 @@ TEST_F(EthereumProviderImplUnitTest,
   base::test::TestFuture<bool> remove_future;
   json_rpc_service()->RemoveChain(chain_id, mojom::CoinType::ETH,
                                   remove_future.GetCallback());
-  EXPECT_TRUE(remove_future.Wait());
+  ASSERT_TRUE(remove_future.Get());
 
   json_rpc_service()->NotifySwitchChainRequestProcessed(*request_id, true);
   auto switch_response = switch_future.Take();
