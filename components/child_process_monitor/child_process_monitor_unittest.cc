@@ -16,7 +16,7 @@
 #include "base/functional/bind.h"
 #include "base/functional/callback.h"
 #include "base/memory/scoped_refptr.h"
-#include "base/process/kill.h"
+#include "base/process/process.h"
 #include "base/process/process_handle.h"
 #include "base/task/sequenced_task_runner.h"
 #include "base/test/multiprocess_test.h"
@@ -24,21 +24,13 @@
 #include "base/test/test_future.h"
 #include "base/test/test_timeouts.h"
 #include "base/threading/platform_thread.h"
+#include "base/time/time.h"
 #include "build/build_config.h"
 #include "testing/gtest/include/gtest/gtest.h"
 #include "testing/multiprocess_func_list.h"
 
 namespace brave {
 namespace {
-void WaitForChildTermination(base::ProcessHandle handle) {
-  int exit_code;
-  base::TerminationStatus status = base::TERMINATION_STATUS_STILL_RUNNING;
-  do {
-    status = base::GetTerminationStatus(handle, &exit_code);
-    base::PlatformThread::Sleep(base::Milliseconds(30));
-  } while (status == base::TERMINATION_STATUS_STILL_RUNNING);
-}
-
 void ExpectSequenceAndForward(
     scoped_refptr<base::SequencedTaskRunner> expected_runner,
     base::OnceCallback<void(base::ProcessId)> callback,
@@ -50,19 +42,23 @@ void ExpectSequenceAndForward(
 
 class ChildProcessMonitorTest : public base::MultiProcessTest {
  protected:
-  void SetUp() override {
-    callback_runner_ = base::SequencedTaskRunner::GetCurrentDefault();
+  void StartMonitor(ChildProcessMonitor& monitor, const base::Process& child) {
+    monitor.Start(child.Duplicate(),
+                  base::BindOnce(&ExpectSequenceAndForward,
+                                 base::SequencedTaskRunner::GetCurrentDefault(),
+                                 exit_future_.GetSequenceBoundCallback()));
   }
 
-  // Checks that the monitor runs |callback| on |callback_runner_|.
-  base::OnceCallback<void(base::ProcessId)> OnCallbackSequence(
-      base::OnceCallback<void(base::ProcessId)> callback) {
-    return base::BindOnce(&ExpectSequenceAndForward, callback_runner_,
-                          std::move(callback));
+  void ExpectExit(const base::Process& child) {
+    EXPECT_EQ(exit_future_.Get(), child.Pid());
+    // On POSIX the monitor reaps the child. Checking before its callback can
+    // consume the exit status that the monitor is waiting for.
+    EXPECT_TRUE(child.WaitForExitWithTimeout(base::TimeDelta(), nullptr));
   }
 
+ private:
   base::test::TaskEnvironment task_environment_;
-  scoped_refptr<base::SequencedTaskRunner> callback_runner_;
+  base::test::TestFuture<base::ProcessId> exit_future_;
 };
 
 MULTIPROCESS_TEST_MAIN(NeverDieChildProcess) {
@@ -72,32 +68,27 @@ MULTIPROCESS_TEST_MAIN(NeverDieChildProcess) {
 }
 
 TEST_F(ChildProcessMonitorTest, Terminate) {
-  std::unique_ptr<ChildProcessMonitor> monitor =
-      std::make_unique<ChildProcessMonitor>();
+  ChildProcessMonitor monitor;
 
   base::Process process = SpawnChild("NeverDieChildProcess");
-  base::test::TestFuture<base::ProcessId> future;
-  monitor->Start(process.Duplicate(), OnCallbackSequence(future.GetCallback()));
-  process.Terminate(0, false);
-  WaitForChildTermination(process.Handle());
-  EXPECT_EQ(future.Get(), process.Pid());
+  ASSERT_TRUE(process.IsValid());
+  StartMonitor(monitor, process);
+  ASSERT_TRUE(process.Terminate(0, false));
+  ExpectExit(process);
 }
 
 TEST_F(ChildProcessMonitorTest, Kill) {
-  std::unique_ptr<ChildProcessMonitor> monitor =
-      std::make_unique<ChildProcessMonitor>();
+  ChildProcessMonitor monitor;
 
   base::Process process = SpawnChild("NeverDieChildProcess");
-  base::test::TestFuture<base::ProcessId> future;
-  monitor->Start(process.Duplicate(), OnCallbackSequence(future.GetCallback()));
+  ASSERT_TRUE(process.IsValid());
+  StartMonitor(monitor, process);
 #if BUILDFLAG(IS_WIN)
-  HANDLE handle = ::OpenProcess(PROCESS_ALL_ACCESS, 0, process.Pid());
-  ::TerminateProcess(handle, 1);
+  ASSERT_TRUE(::TerminateProcess(process.Handle(), 1));
 #elif BUILDFLAG(IS_POSIX)
-  ::kill(process.Pid(), SIGKILL);
+  ASSERT_EQ(0, ::kill(process.Pid(), SIGKILL));
 #endif
-  WaitForChildTermination(process.Handle());
-  EXPECT_EQ(future.Get(), process.Pid());
+  ExpectExit(process);
 }
 
 MULTIPROCESS_TEST_MAIN(FastSleepyChildProcess) {
@@ -106,17 +97,14 @@ MULTIPROCESS_TEST_MAIN(FastSleepyChildProcess) {
 }
 
 TEST_F(ChildProcessMonitorTest, ChildExit) {
-  std::unique_ptr<ChildProcessMonitor> monitor =
-      std::make_unique<ChildProcessMonitor>();
+  ChildProcessMonitor monitor;
 
   base::Process process = SpawnChild("FastSleepyChildProcess");
+  ASSERT_TRUE(process.IsValid());
 
   // Set up monitor before the child process has a chance to exit
-  base::test::TestFuture<base::ProcessId> future;
-  monitor->Start(process.Duplicate(), OnCallbackSequence(future.GetCallback()));
-  EXPECT_EQ(future.Get(), process.Pid());
-
-  WaitForChildTermination(process.Handle());
+  StartMonitor(monitor, process);
+  ExpectExit(process);
 }
 
 MULTIPROCESS_TEST_MAIN(SleepyCrashChildProcess) {
@@ -133,17 +121,14 @@ MULTIPROCESS_TEST_MAIN(SleepyCrashChildProcess) {
 }
 
 TEST_F(ChildProcessMonitorTest, ChildCrash) {
-  std::unique_ptr<ChildProcessMonitor> monitor =
-      std::make_unique<ChildProcessMonitor>();
+  ChildProcessMonitor monitor;
 
   base::Process process = SpawnChild("SleepyCrashChildProcess");
+  ASSERT_TRUE(process.IsValid());
 
   // Set up monitor immediately after spawning to avoid race condition
-  base::test::TestFuture<base::ProcessId> future;
-  monitor->Start(process.Duplicate(), OnCallbackSequence(future.GetCallback()));
-  EXPECT_EQ(future.Get(), process.Pid());
-
-  WaitForChildTermination(process.Handle());
+  StartMonitor(monitor, process);
+  ExpectExit(process);
 }
 
 }  // namespace brave
