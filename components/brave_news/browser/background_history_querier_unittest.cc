@@ -91,7 +91,7 @@ class BraveNewsBackgroundHistoryQuerierTest : public testing::Test {
 
 TEST_F(BraveNewsBackgroundHistoryQuerierTest, CanGetHistoryOffMainThread) {
   EXPECT_CALL(history_service_, QueryHistory(_, _, _, _))
-      .WillRepeatedly(testing::WithArg<2>([&](QueryHistoryCallback callback) {
+      .WillOnce(testing::WithArg<2>([](QueryHistoryCallback callback) {
         history::QueryResults results;
         auto result =
             history::URLResult(GURL("https://example.com"), base::Time::Now());
@@ -103,21 +103,13 @@ TEST_F(BraveNewsBackgroundHistoryQuerierTest, CanGetHistoryOffMainThread) {
   QueryOnBgRunner();
   history::QueryResults result = Wait();
 
-  EXPECT_EQ(1u, result.size());
+  ASSERT_EQ(1u, result.size());
   EXPECT_EQ(GURL("https://example.com"), result.back().url());
 }
 
 TEST_F(BraveNewsBackgroundHistoryQuerierTest,
        BackgroundHistoryNotRequestedWhenDestroyed) {
-  EXPECT_CALL(history_service_, QueryHistory(_, _, _, _))
-      .WillRepeatedly(testing::WithArg<2>([&](QueryHistoryCallback callback) {
-        history::QueryResults results;
-        auto result =
-            history::URLResult(GURL("https://example.com"), base::Time::Now());
-        results.SetURLResults({result});
-        std::move(callback).Run(std::move(results));
-        return 0;
-      }));
+  EXPECT_CALL(history_service_, QueryHistory(_, _, _, _)).Times(0);
 
   QueryOnBgRunner();
   FakeDestroyed();
