@@ -180,12 +180,16 @@ source_set("browser_tests") {
     "//brave/browser:brave_browser_features",
     "//brave/browser:browser_process",
     "//brave/browser/extensions:test_support",
+    "//brave/browser/ui:ui_features",
     "//brave/components/ai_chat/core/common/buildflags",
     "//brave/components/brave_ads/buildflags",
     "//brave/components/brave_news/common/buildflags",
     "//brave/components/brave_rewards/core/buildflags",
+    "//brave/components/brave_search_conversion",
     "//brave/components/brave_vpn/common/buildflags",
     "//brave/components/constants",
+    "//brave/components/l10n/common:test_support",
+    "//brave/components/skus/common",
     "//chrome/browser/profiles:profile",
     "//chrome/common",
     "//chrome/test:test_support",
@@ -203,10 +207,8 @@ source_set("browser_tests") {
     sources += [ "ntp_ai_chat_browsertest.cc" ]
 
     deps += [
-      "//brave/browser/ui:ui_features",
       "//brave/components/ai_chat/core/common",
       "//brave/components/brave_search/common",
-      "//brave/components/brave_search_conversion",
     ]
   }
 
@@ -214,15 +216,8 @@ source_set("browser_tests") {
     deps += [ "//brave/components/brave_news/common" ]
   }
 
-  if (enable_brave_rewards) {
-    deps += [ "//brave/components/l10n/common:test_support" ]
-  }
-
   if (enable_brave_vpn) {
-    deps += [
-      "//brave/components/brave_vpn/common",
-      "//brave/components/skus/common",
-    ]
+    deps += [ "//brave/components/brave_vpn/common" ]
   }
 
   if (enable_brave_ads) {
