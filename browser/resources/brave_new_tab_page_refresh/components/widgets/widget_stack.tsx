@@ -126,7 +126,12 @@ export function WidgetStack(props: Props) {
         {visibleTabs.length > 1 && (
           <div className='stack-tabs'>{visibleTabs.map(renderTabButton)}</div>
         )}
-        <div className='widget'>{renderWidget()}</div>
+        <div
+          className='widget'
+          data-testid={`${activeTab}-widget`}
+        >
+          {renderWidget()}
+        </div>
       </div>
     </NtpWidget>
   )

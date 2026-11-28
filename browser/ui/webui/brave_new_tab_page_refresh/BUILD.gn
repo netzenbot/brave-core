@@ -185,11 +185,13 @@ source_set("browser_tests") {
     "//brave/components/brave_news/common/buildflags",
     "//brave/components/brave_rewards/core/buildflags",
     "//brave/components/brave_vpn/common/buildflags",
+    "//brave/components/constants",
     "//chrome/browser/profiles:profile",
     "//chrome/common",
     "//chrome/test:test_support",
     "//components/policy/core/browser",
     "//components/policy/core/common:test_support",
+    "//components/prefs",
     "//content/public/browser",
     "//content/public/common:result_codes",
     "//content/test:test_support",
@@ -201,11 +203,25 @@ source_set("browser_tests") {
     sources += [ "ntp_ai_chat_browsertest.cc" ]
 
     deps += [
+      "//brave/browser/ui:ui_features",
       "//brave/components/ai_chat/core/common",
       "//brave/components/brave_search/common",
       "//brave/components/brave_search_conversion",
-      "//chrome/browser/profiles:profile",
-      "//components/prefs",
+    ]
+  }
+
+  if (enable_brave_news) {
+    deps += [ "//brave/components/brave_news/common" ]
+  }
+
+  if (enable_brave_rewards) {
+    deps += [ "//brave/components/l10n/common:test_support" ]
+  }
+
+  if (enable_brave_vpn) {
+    deps += [
+      "//brave/components/brave_vpn/common",
+      "//brave/components/skus/common",
     ]
   }
 
