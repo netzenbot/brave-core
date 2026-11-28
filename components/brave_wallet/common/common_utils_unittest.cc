@@ -7,6 +7,8 @@
 
 #include <stddef.h>
 
+#include <vector>
+
 #include "base/test/gtest_util.h"
 #include "base/test/scoped_feature_list.h"
 #include "brave/components/brave_wallet/common/features.h"
@@ -871,52 +873,40 @@ TEST(CommonUtilsDeathTest, MakeIndexBasedAccountId_ADA) {
 }
 
 TEST(CommonUtils, CoinSupportsDapps) {
-  // DOT needs both the Polkadot feature and its dapp support param.
+  auto supported_coins = [] {
+    std::vector<mojom::CoinType> coins;
+    for (auto coin : kAllCoins) {
+      if (CoinSupportsDapps(coin)) {
+        coins.push_back(coin);
+      }
+    }
+    return coins;
+  };
+
+  using enum mojom::CoinType;
+  {
+    base::test::ScopedFeatureList feature_list;
+    feature_list.InitAndDisableFeature(features::kBraveWalletPolkadotFeature);
+    EXPECT_THAT(supported_coins(),
+                testing::UnorderedElementsAre(ETH, SOL, ADA));
+  }
+
   {
     base::test::ScopedFeatureList feature_list;
     feature_list.InitAndEnableFeatureWithParameters(
         features::kBraveWalletPolkadotFeature,
         {{"polkadot_dapp_support", "false"}});
-
-    for (auto coin : kAllCoins) {
-      if (coin == mojom::CoinType::ETH || coin == mojom::CoinType::SOL ||
-          coin == mojom::CoinType::ADA) {
-        EXPECT_TRUE(CoinSupportsDapps(coin));
-      } else {
-        EXPECT_FALSE(CoinSupportsDapps(coin));
-      }
-    }
+    EXPECT_THAT(supported_coins(),
+                testing::UnorderedElementsAre(ETH, SOL, ADA));
   }
 
   {
     base::test::ScopedFeatureList feature_list;
-    feature_list.InitAndDisableFeature(features::kBraveWalletPolkadotFeature);
-
-    for (auto coin : kAllCoins) {
-      if (coin == mojom::CoinType::ETH || coin == mojom::CoinType::SOL ||
-          coin == mojom::CoinType::ADA) {
-        EXPECT_TRUE(CoinSupportsDapps(coin));
-      } else {
-        EXPECT_FALSE(CoinSupportsDapps(coin));
-      }
-    }
-  }
-
-  {
-    base::test::ScopedFeatureList feature_list;
-    feature_list.InitWithFeaturesAndParameters(
-        {{features::kBraveWalletPolkadotFeature,
-          {{"polkadot_dapp_support", "true"}}}},
-        {});
-
-    for (auto coin : kAllCoins) {
-      if (coin == mojom::CoinType::ETH || coin == mojom::CoinType::SOL ||
-          coin == mojom::CoinType::ADA || coin == mojom::CoinType::DOT) {
-        EXPECT_TRUE(CoinSupportsDapps(coin));
-      } else {
-        EXPECT_FALSE(CoinSupportsDapps(coin));
-      }
-    }
+    feature_list.InitAndEnableFeatureWithParameters(
+        features::kBraveWalletPolkadotFeature,
+        {{"polkadot_dapp_support", "true"}});
+    EXPECT_THAT(supported_coins(),
+                testing::UnorderedElementsAre(ETH, SOL, ADA, DOT));
   }
 }
 

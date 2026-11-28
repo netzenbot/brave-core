@@ -170,10 +170,12 @@ class MockOrchardSyncState : public OrchardSyncState {
 class ZCashWalletServiceUnitTest : public testing::Test {
  public:
   ZCashWalletServiceUnitTest() {
-    // Pin the param rather than rely on its default.
-    feature_list_.InitAndEnableFeatureWithParameters(
-        features::kBraveWalletZCashFeature,
-        {{"zcash_shielded_transactions_enabled", "true"}});
+    // The non-ZCash sender case needs a real Bitcoin account.
+    feature_list_.InitWithFeaturesAndParameters(
+        {{features::kBraveWalletBitcoinFeature, {}},
+         {features::kBraveWalletZCashFeature,
+          {{"zcash_shielded_transactions_enabled", "true"}}}},
+        {});
   }
   ~ZCashWalletServiceUnitTest() override = default;
 
@@ -1081,10 +1083,12 @@ TEST_F(ZCashWalletServiceUnitTest, AddressDiscovery_FromPrefs) {
 TEST_F(ZCashWalletServiceUnitTest, GetTransactionType_Mainnet) {
   auto account_1 =
       GetAccountUtils().EnsureAccount(mojom::KeyringId::kZCashMainnet, 0);
+  ASSERT_TRUE(account_1);
   auto account_id_1 = account_1->account_id.Clone();
 
   auto btc_account_1 =
       GetAccountUtils().EnsureAccount(mojom::KeyringId::kBitcoin84, 0);
+  ASSERT_TRUE(btc_account_1);
   auto btc_account_id_1 = btc_account_1->account_id.Clone();
 
   // https://github.com/Electric-Coin-Company/zcash-android-wallet-sdk/blob/v2.0.6/sdk-incubator-lib/src/main/java/cash/z/ecc/android/sdk/fixture/WalletFixture.kt
@@ -1310,6 +1314,7 @@ TEST_F(ZCashWalletServiceUnitTest, GetTransactionType_Mainnet) {
 TEST_F(ZCashWalletServiceUnitTest, GetTransactionType_Testnet) {
   auto account_1 =
       GetAccountUtils().EnsureAccount(mojom::KeyringId::kZCashTestnet, 0);
+  ASSERT_TRUE(account_1);
   auto account_id_1 = account_1->account_id.Clone();
 
   // Normal transparent address - testnet.
